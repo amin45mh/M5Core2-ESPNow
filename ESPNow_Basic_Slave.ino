@@ -31,8 +31,17 @@
 
 #include <esp_now.h>
 #include <WiFi.h>
+#include <M5Core2.h>
 
 #define CHANNEL 1
+
+// Data structure for receiving commands
+typedef struct struct_message {
+  char command[32];
+  uint16_t color;
+} struct_message;
+
+struct_message myData;
 
 // Init ESP Now with fallback
 void InitESPNow() {
@@ -62,7 +71,19 @@ void configDeviceAP() {
 }
 
 void setup() {
+  M5.begin(true, false, true, true); // Init M5Core2
   Serial.begin(115200);
+  
+  // Initial screen setup
+  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setCursor(10, 10);
+  M5.Lcd.println("Slave Ready");
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setCursor(10, 40);
+  M5.Lcd.println("Waiting for color commands...");
+  
   Serial.println("ESPNow/Basic/Slave Example");
   //Set device in AP mode to begin with
   WiFi.mode(WIFI_AP);
@@ -83,10 +104,39 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
   Serial.print("Last Packet Recv from: "); Serial.println(macStr);
-  Serial.print("Last Packet Recv Data: "); Serial.println(*data);
+  
+  // Copy data to structure
+  memcpy(&myData, data, sizeof(myData));
+  
+  Serial.print("Command: "); Serial.println(myData.command);
+  Serial.print("Color: 0x"); Serial.println(myData.color, HEX);
+  
+  // Process color command
+  if (strcmp(myData.command, "COLOR") == 0) {
+    // Change screen to the received color
+    M5.Lcd.fillScreen(myData.color);
+    
+    // Add a small info label at the top
+    M5.Lcd.setTextSize(2);
+    
+    // Choose contrasting text color based on background
+    if (myData.color == TFT_BLACK || myData.color == TFT_BLUE || 
+        myData.color == TFT_RED || myData.color == TFT_MAGENTA) {
+      M5.Lcd.setTextColor(WHITE);
+    } else {
+      M5.Lcd.setTextColor(BLACK);
+    }
+    
+    M5.Lcd.setCursor(10, 10);
+    M5.Lcd.println("Color Changed!");
+    
+    Serial.println("Screen color changed successfully");
+  }
+  
   Serial.println("");
 }
 
 void loop() {
-  // Chill
+  M5.update(); // Update M5 state
+  delay(10);
 }

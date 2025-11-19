@@ -32,12 +32,40 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h> // only for esp_wifi_set_channel()
+#include <M5Core2.h>
 
 // Global copy of slave
 esp_now_peer_info_t slave;
 #define CHANNEL 1
 #define PRINTSCANRESULTS 0
 #define DELETEBEFOREPAIR 0
+
+// Data structure for sending commands
+typedef struct struct_message {
+  char command[32];
+  uint16_t color;
+} struct_message;
+
+struct_message myData;
+
+// Color button definitions
+struct ColorButton {
+  int x, y, w, h;
+  uint16_t color;
+  const char* name;
+};
+
+ColorButton colorButtons[] = {
+  {10, 60, 70, 60, TFT_BLUE, "Blue"},
+  {90, 60, 70, 60, TFT_RED, "Red"},
+  {170, 60, 70, 60, TFT_GREEN, "Green"},
+  {250, 60, 70, 60, TFT_YELLOW, "Yellow"},
+  {10, 130, 70, 60, TFT_CYAN, "Cyan"},
+  {90, 130, 70, 60, TFT_MAGENTA, "Magenta"},
+  {170, 130, 70, 60, TFT_ORANGE, "Orange"},
+  {250, 130, 70, 60, TFT_WHITE, "White"}
+};
+const int numButtons = 8;
 
 // Init ESP Now with fallback
 void InitESPNow() {
@@ -184,18 +212,49 @@ void deletePeer() {
   }
 }
 
-uint8_t data = 0;
-// send data
-void sendData() {
-  data++;
+// Draw color control buttons on screen
+void drawColorButtons() {
+  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setCursor(10, 10);
+  M5.Lcd.println("Remote Color Control");
+  
+  for (int i = 0; i < numButtons; i++) {
+    M5.Lcd.fillRect(colorButtons[i].x, colorButtons[i].y, 
+                     colorButtons[i].w, colorButtons[i].h, 
+                     colorButtons[i].color);
+    M5.Lcd.drawRect(colorButtons[i].x, colorButtons[i].y, 
+                     colorButtons[i].w, colorButtons[i].h, 
+                     WHITE);
+    
+    // Draw text label
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(BLACK);
+    M5.Lcd.setCursor(colorButtons[i].x + 5, colorButtons[i].y + 25);
+    M5.Lcd.println(colorButtons[i].name);
+  }
+  
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setCursor(10, 210);
+  M5.Lcd.println("Touch a color to change slave screen");
+}
+
+// Send color command to slave
+void sendColorCommand(uint16_t color, const char* colorName) {
   const uint8_t *peer_addr = slave.peer_addr;
-  Serial.print("Sending: "); Serial.println(data);
-  esp_err_t result = esp_now_send(peer_addr, &data, sizeof(data));
+  strcpy(myData.command, "COLOR");
+  myData.color = color;
+  
+  Serial.print("Sending color: ");
+  Serial.println(colorName);
+  
+  esp_err_t result = esp_now_send(peer_addr, (uint8_t *) &myData, sizeof(myData));
   Serial.print("Send Status: ");
   if (result == ESP_OK) {
     Serial.println("Success");
   } else if (result == ESP_ERR_ESPNOW_NOT_INIT) {
-    // How did we get so far!!
     Serial.println("ESPNOW not Init.");
   } else if (result == ESP_ERR_ESPNOW_ARG) {
     Serial.println("Invalid Argument");
@@ -210,6 +269,35 @@ void sendData() {
   }
 }
 
+// Check for touch events and send color commands
+void handleTouch() {
+  if (M5.Touch.ispressed()) {
+    TouchPoint_t pos = M5.Touch.getPressPoint();
+    
+    for (int i = 0; i < numButtons; i++) {
+      if (pos.x >= colorButtons[i].x && 
+          pos.x <= colorButtons[i].x + colorButtons[i].w &&
+          pos.y >= colorButtons[i].y && 
+          pos.y <= colorButtons[i].y + colorButtons[i].h) {
+        
+        // Button pressed - send color command
+        if (slave.channel == CHANNEL) {
+          sendColorCommand(colorButtons[i].color, colorButtons[i].name);
+        } else {
+          Serial.println("Slave not connected!");
+          M5.Lcd.fillRect(0, 195, 320, 15, BLACK);
+          M5.Lcd.setTextColor(RED);
+          M5.Lcd.setCursor(10, 195);
+          M5.Lcd.println("Slave not connected!");
+        }
+        
+        delay(200); // Debounce
+        break;
+      }
+    }
+  }
+}
+
 // callback when data is sent from Master to Slave
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   char macStr[18];
@@ -220,7 +308,12 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 
 void setup() {
+  M5.begin(true, false, true, true); // Init M5Core2 with touch enabled
   Serial.begin(115200);
+  
+  // Draw the UI
+  drawColorButtons();
+  
   //Set device in STA mode to begin with
   WiFi.mode(WIFI_STA);
   esp_wifi_set_channel(CHANNEL, WIFI_SECOND_CHAN_NONE);
@@ -233,30 +326,19 @@ void setup() {
   // Once ESPNow is successfully Init, we will register for Send CB to
   // get the status of Trasnmitted packet
   esp_now_register_send_cb(OnDataSent);
+  
+  // Scan for slave once at startup
+  ScanForSlave();
+  if (slave.channel == CHANNEL) {
+    manageSlave();
+  }
 }
 
 void loop() {
-  // In the loop we scan for slave
-  ScanForSlave();
-  // If Slave is found, it would be populate in `slave` variable
-  // We will check if `slave` is defined and then we proceed further
-  if (slave.channel == CHANNEL) { // check if slave channel is defined
-    // `slave` is defined
-    // Add slave as peer if it has not been added already
-    bool isPaired = manageSlave();
-    if (isPaired) {
-      // pair success or already paired
-      // Send data to device
-      sendData();
-    } else {
-      // slave pair failed
-      Serial.println("Slave pair failed!");
-    }
-  }
-  else {
-    // No slave found to process
-  }
-
-  // wait for 3seconds to run the logic again
-  delay(3000);
+  M5.update(); // Update M5 button and touch state
+  
+  // Handle touch events
+  handleTouch();
+  
+  delay(50); // Small delay for responsiveness
 }
